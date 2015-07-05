@@ -1,0 +1,370 @@
+---
+title: "R을 이용한 부동산 자료분석의 시작"
+author: "전희원"
+date: "2015년 6월 16일"
+output: html_document
+---
+
+```{r setup, cache=FALSE, include=FALSE}
+library(knitr)
+suppressPackageStartupMessages({
+library(data.table)
+library(dplyr)
+library(ggplot2)
+library(lubridate)
+library(extrafont)
+library(forecast)
+library(randtests)
+library(stringr)
+})
+
+
+opts_chunk$set(dev='png',echo=FALSE, dpi=300)
+```
+
+
+필자가 `R`을 처음 써본게 2008년 즈임이었고, 본격적으로 업무의 필수 도구로 사용하기 시작한건 2011년 정도다. 그 당시만 해도 부족한 컴퓨팅 리소스와 경이로울 정도로 성능이 낮은 퍼포먼스 그리고 필자의 경험 부족이 결합해 매우 어렵게 이런 저런 분석 프로젝트를 수행했던것 같다. 같은 방식의 분석을 3년 정도 지난 시점에서 비슷한 량의 데이터로 수행하는데 엄청난 분석 퍼포먼스 향상을 피부로 느낄정도여서 참 많이 좋아졌다는 생각을 해본다. 게다가 다양한 패키지의 개발로 인해 이번과 같이 R을 이용한 공공 데이터 수집에 대한 내용도 다룰 수 있게 되었다. 
+
+데이터 수집은 전통적으로 Python이 가장 강세를 보였던 분야인데, Python이 전문 라이브러리로 특화가 되어가는 와중에 여러 오픈소스 프로젝트들로 인해 간단한 수집 정도는 R을 기반으로 수행할 수 있게 되었다. 이러한 분위기에 힘입어 여러 CRAN Task View에서 [웹 테크놀러지][webtech] 분과가 최근 추가되고 이제는 R로 수행할 수 있는 대표적인 영역중에 하나로 발돋움 할 수 있게 되었다. 
+
+웹에는 엄청난 양의 데이터가 숨쉬고 있고, 특징적으로 비정형적인 특성을 가진 텍스트가 대부분이어서 이를 분석 가능하게 하기 위해 가져오고, 정리하는데 많은 공수가 소요된다. 일반적으로 분석 목적에 맞게 데이터를 가공하는데 전체 데이터 분석 시간의 `70%` 이상이 소요된다고 알려져 있는데, 웹 데이터를 기반으로 한다면 `80%`이상 소요된다고 필자는 자신있게 이야기 할 수 있을 것 같다.
+
+
+
+
+
+
+# 분석 데이터 수집과 데이터 얼개 살펴보기 
+
+분석을 위해 사용할 원천 데이터는 [`국토교통부 실거래가`][molit] 홈페이지에서 획득가능하며, 이 데이터를 수집하고 정리하는 코드는 아래와 같다. 
+
+
+```{r crawl,echo=TRUE,eval=FALSE,size='tiny'}
+#웹 데이터 수집과 저장을 위한 패키지
+library(rvest) 
+#rvest를 구성하는 저수준 API를 저장하고 있으며 
+#rvest에 대한 자세한 핸들링을 하기 위해 사용한다. 
+library(httr)  
+#문자열 처리에 대한 패키지로 
+library(stringi)
+#국토교통부에서 원 데이터를 엑셀로 제공하기 때문에 
+#엑셀 데이터를 읽어들이기 위해서 필요함 
+library(XLConnect)
+# data.frame보다 편리하고 효율적인 테이블 핸들링 패키지 
+library(data.table)
+
+
+## 엑셀 데이터 다운로딩 부분(데이터는 working dir아래 data 디렉토리에 쌓인다.)
+su <- file("succ.txt", "w")
+
+#흡사 웹브라우저처럼 웹서버에서 인식하게 한다.  
+agent_nm <- paste0("Mozilla/5.0 (Macintosh;", 
+                   "Intel Mac OS X 10.10; rv:35.0) Gecko/20100101 Firefox/35.0")
+
+#게시판 번호의 최대값을 가져온다. 
+maxidx <- html('http://rt.molit.go.kr/rtFile.do?cmd=list') %>% 
+ html_nodes('.notiWhite1 .notiBorad01') %>%
+ html_text %>% as.numeric %>% max
+  
+#가져온 게시판 번호를 이용해 전체 실거래가 페이지를 방문해 파일을 다운로드한다.
+for(i in maxidx:1){
+  urls_view <- sprintf("http://rt.molit.go.kr/rtFile.do?cmd=view&seqNo=%d", i)
+  r <- GET(urls_view,
+           user_agent(agent_nm))
+  htxt <- html(r, "text")
+  html_nodes(htxt, "td.notiBorad14")[[1]] %>%
+    html_text() 
+  #만일 페이지에 아래와 같은 텍스트가 존재하면 
+  #다음 페이지를 수집한다. 
+  if((html_nodes(htxt, "td.notiBorad14")[[2]]  %>% 
+      html_text()  %>% stri_trim_both) == 
+       '첨부파일이 존재하지 않습니다.') next
+  
+  download_tags <- html_nodes(htxt, "td.notiBorad14")[[2]] %>%
+    html_nodes('a[href^="javascript:jsDown"]')  
+  #페이지 내에 있는 다운로드 태그를 순회하며 태그 이름(파일명)과 
+  #링크 정보(파일 다운로드 링크)를 추출해 각각 저장한다. 
+  for(dtag in download_tags){
+    
+    dtag %>% html_attr("href") %>% 
+      stri_match_altl_regex(pattern="javascript:jsDown\\('([0-9]+)','([0-9]+)'\\);") %>%
+      .[[1]]  %>%  
+          { 
+            f_idx <<- .[2] %>% as.numeric
+            s_idx <<- .[3] %>% as.numeric
+          }
+    
+    f_nm <- dtag %>% html_text
+    
+    urls <- sprintf(paste0("http://rt.molit.go.kr/", 
+                           "rtFile.do?cmd=fileDownload&seq_no=%d&file_seq_no=%d"), 
+                    f_idx,s_idx)
+    r <- GET(urls,
+             user_agent(agent_nm))
+    bin <- content(r, "raw")
+    
+    #1kb 미만의 데이터는 버림(에러 페이지?) 
+    if(length(bin) < 1000) next
+    writeBin(bin, sprintf("data/%s",f_nm))
+    cat(sprintf("%d, %d\n", f_idx,s_idx), file = su)
+    print(sprintf("%d, %d", f_idx,s_idx))
+  }
+}
+
+close(su)
+
+
+
+
+## 엑셀 데이터에서 테이블을 추출해 하나의 아파트 매매 데이터로 통합하는 코드 
+## 연립 다세대, 단독 다가 데이터도 간단한 코드 변환으로 통합할 수 있다. 
+
+
+f_list <- list.files('data') %>%  stri_trans_nfc  %>% .[stri_detect_fixed(.,'매매아파트')]
+  
+total_list <- list()
+
+#cnts <- 0
+
+for(xlsf in f_list){
+  wb <- loadWorkbook(paste0('data/',xlsf))
+  sells <- list()
+  fname <- stri_replace_last_fixed(xlsf, '.xls',"")
+  yyyymm <- substring(fname, 1, 6)
+  typenm <- substring(fname, 9)
+  for(nm in getSheets(wb)) {
+    df <- data.table(readWorksheet(wb, sheet = nm, header = TRUE))
+    df[,`:=`(region=nm, yyyymm=yyyymm, typenm=typenm)]
+    df[,`거래금액.만원.`:= stri_replace_all_fixed(`거래금액.만원.`, ',', '')]
+    sells[[nm]] <- df
+  }
+  total_list[[paste0(yyyymm,typenm)]] <- rbindlist(sells)
+  #cnts <- cnts + 1
+  #if(cnts > 10) break
+}
+
+result_sales_dt <- rbindlist(total_list)
+
+
+
+setnames(result_sales_dt, 1:10,
+         c('si_gun_gu', 'm_bun', 's_bun', 'dangi', 'area',
+           'cont_date', 'price', 'floor', 'year_of_construct', 'road_nm'))
+
+result_sales_dt[,price:=as.numeric(price)]
+result_sales_dt[,floor:=as.numeric(floor)]
+result_sales_dt[,mm:=substr(yyyymm, 5,6)]
+result_sales_dt[between(as.numeric(mm), 1, 3), qrt:='Q1']
+result_sales_dt[between(as.numeric(mm), 4, 6), qrt:='Q2']
+result_sales_dt[between(as.numeric(mm), 7, 9), qrt:='Q3']
+result_sales_dt[between(as.numeric(mm), 10, 12), qrt:='Q4']
+result_sales_dt[,yyyyqrt:=paste0(substr(yyyymm, 1,4), qrt)]
+result_sales_dt[,yyyy:=factor(substr(yyyymm, 1,4))]
+result_sales_dt[,yyyyqrt:=factor(yyyyqrt)]
+
+
+#결과 데이터 저장 
+save(result_sales_dt, file='result_sales_dt.RData')
+```
+
+참고로 웹 데이터를 수집하는 코드는 웹 페이지의 구조가 변경되면 반드시 바뀌어야 될 수 밖에 없는 운명을 가진 코드이다. 따라서 실거래가 홈페이지 자료제공 방식이 바뀌거나 혹은 조그마한 개편이라도 되면 코드를 자료제공 레이아웃에 맞게 바꿔야 된다는 것을 기억하길 바란다. `result_sales_dt.RData` 데이터 파일은 실습을 위해 [GitHub][github] 링크에서 제공하고 있으니 코드를 실행하거나 이해해야 되는 부담은 일단 떨치길 바란다.
+
+데이터 수집 코드가 동작하는 방식은 매매정보가 포함된 엑셀 파일이 존재하는 URL에 대해서 어떠한 순차적인 패턴이 있을거라는 판단을 하고 이 순차 패턴을 쭉 따라가 엑셀파일을 다운로드 받는 것이다. 이렇게 받은 엑셀 파일들은 분석 목적에 맞게 정리되 `data.table`객체로 저장되게 된다.  
+
+
+
+
+앞으로 코드를 이해하기 위해 필요한 패키지 설명을 간단하게 하겠다.  
+
+- `data.table` : `data.frame`과 같은 데이터 저장 클래스를 공유하며, `data.frame`에 비해 수십에서 수백배 빠른 데이터 처리 능력을 보여주며 간단한 코드로 다양한 데이터 전처리를 할 수 있게 한다. 오백만건 이상의 레코드의 데이터를 사용해야 되기 때문에 해당 패키지를 사용했다.
+- `dplyr` : 이 글에서는 `data.table`과 함께 사용이 되며 파이프 연산자를 통해 코드의 가독성을 높여주고, `data.table` 혹은 `data.frame`이든 원본 소스에 상관없이 같은 전처리 코드로 다양한 소스 데이터를 다룰 수 있게 해준다. 
+- `ggplot2` : 대표적인 `R`기반 시각화 도구 
+- `lubridate` :  `R`에서 다소 복잡한 시간에 관련된 데이터를 쉽게 다룰 수 있게 해주는 패키지 
+
+이상의 패키지들이 대표적인 시각화 및 데이터 전처리 패키지들이다. 이정도 패키지들은 손에 익혀 두어야 어떠한 데이터든 빠르게 정리할 수 있다. 
+
+
+- `forecast` : 시계열 분석을 위한 패키지 
+- `randtests` : 램덤성을 검정하는 패키지 
+
+
+필자가 분석에 사용한 머신은 16GB의 메인 메모리를 가지고 있는 맥북 프로이다. 최대 약 5백만건의 데이터를 로딩해야 되기 때문에 메인 메모리 8GB 이상의 머신에서의 실습을 추천드린다. 참고로 수집한 5백만건의 매매 데이터의 메모리 로딩 크기는 약 633Mb이다. 
+
+```{r load, echo=TRUE}
+# 수집한 매매 데이터 로딩 
+load('result_sales_dt.RData')
+```
+
+
+데이터가 주어지면 전체적으로 어떻게 구성이 되어 있는지 확인이 필요하다. 많은 경우 `head` 명령어나 `str` 명령어를 주로 사용하나 필자는 `dplyr`의 `glimpse` 명령어를 주로 사용한다. 
+
+
+```{r load2,echo=TRUE}
+glimpse(result_sales_dt, width=60)
+```
+
+
+`si_gun_gu`는 매매가 일어날 시군을 의미하며, `m_bun`, `s_bun`은 번지를 의미한다. `area`는 $m^2$ 단위의 면적을 의미한다. `cont_date`는 계약일, `price`는 만원단위의 매매가격이다. `road_nm`은 도로명 주소, `region`은 지역, `yyyymm` 매매 년월을 의미한다.  
+
+관심을 두는 문제는 아래와 같은 질문에 대한 나름의 답을 구하는 것이다. 
+
+- 아파트 매매 추이는 어떻게 되는가? 그리고 매매량 예측이 가능한가? 
+
+
+일단 분석전 일반적인 예상을 해보자면 부동산이라는건 가격을 결정하고 수요를 결정하는 많은 외부 요인들이 많기 때문에 예측이 어려울 것이라는 생각을 해본다. 하지만 그 불확실한 정보량이 어느정도 되는지 가늠해 보는것도 의미가 있을 것이라 생각한다. 
+
+
+
+```{r,echo=FALSE}
+theme_set(theme_gray(base_family = "UnBatang"))
+```
+
+
+# 매매 추이 
+
+`ggplot2`로 간단하게 분기별 아파트 매매건수를 시각화 해보겠다. 2015년 2분기는 아직 완전한 데이터가 수집된 상황이 아니므로 제거한다. 
+
+첫번째 라인이 처음 등장하는 `data.table` 문법인데, 아주 간단하게 `data.table` 문법을 `SQL`의 문(statement)으로 설명하자면 아래와 같다. 
+
+
+> `data.table명[where, select, group by]` 
+
+
+`SQL`의 `where`절에 해당하는 곳은 데이터를 조건에 맞게 필터링 하는 곳이며, `select`는 어떠한 필드를 보여줄지 선택하는 곳이고, `group by`문은 어떠한 기준으로 데이터를 요약해서 보여줄지 결정하는 곳이다. 
+
+따라서 아래 구문에서는 쿼터별로 매매수(`.N`는 `group by` 조건에 해당되는 레코드 수를 리턴하는 함수)를 카운팅해서 `qrt_cnts`라는 이름의 `data.table`객체를 만들게 된다. `data.table`객체는 `data.frame`객체를 입력받는 `ggplot()`과 같은 함수에 그대로 적용이 가능해 별도의 변환작업 없이 활용이 가능하다는게 가장 큰 장점중에 하나이다. 
+
+
+`ggplot2` 패키지의 시각화 방식은 데이터와 그래프로 표현되는 미적(aesthetic)객체를 어떻게 매핑시키는지를 서술하는게 가장 기본이다. `그림1`의 그래프의 경우 X축에 `data.table` 객체의 쿼터컬럼(yyyyqrt), Y축에 쿼터별 매매횟수(N)을 매핑 시키고 보여줄 시계열은 1종류라는것을 `group` 파라메터로 명시해 준다. 이런 매핑 정보를 기반으로 `geom_point` 함수나, 이후 `+` 연산자로 추가되는 모든 레이어관련 함수들이 하나의 그래프를 그리기 위해 동작하게 된다. 필자의 경우 이런 미적객체들의 정보가 추가 레이어들에 **상속**된다라고 설명을 하곤한다. 
+
+물론 각 레이어에서 별도의 미적매핑을 사용할 수 있는데, 이런 미적매핑은 해당 레이어 에서만 유효하게 된다. `theme` 명령어는 각 축이나 레이블에 다양한 표현을 하기 위해서 제공되는 명령어로 X축의 레이블 텍스트가 겹치는 현상을 없애기 위해 명령어로 텍스트를 90도 회전해 표현하게 했다. `stat_smooth`의 경우 X,Y 변수간의 선형, 혹은 비선형적인 패턴을 시각화 하기 위해 주로 쓰이며, 여기서는 선형회귀 모형으로 피팅된 값을 뿌려주도록 했다. 
+
+좀더 자세한 설명은 필자가 온라인으로 오픈해둔 [`R기반 데이터 시각화`][rvis]라는 책을 참고하길 바란다.
+
+
+```{r,echo=TRUE, fig.cap='분기별 아파트 매매건수'}
+qrt_cnts <- result_sales_dt[yyyyqrt != '2015Q2',.N,yyyyqrt]
+
+ggplot(qrt_cnts, aes(x=yyyyqrt, y=N,group=1)) + 
+  geom_line() + xlab("년도분기") + ylab("매매건수") + 
+  theme(axis.text.x=element_text(angle=90)) + stat_smooth(method='lm')
+```
+
+
+`그림1`은 전체 추이를 분기별로 뿌려본 것이다. 부동산 활황기(2006년)에 엄청난 매매 건수 상승을 가져왔으며, 이후 크고 작은 매매건수 변동이 있었으나 추이에 큰 영향이 없다가 최근 2014년부터 점차 매매건수가 상승하는 추이를 보이고 있음을 알 수 있다. 물론 이런 추이가 어느 지역에서 발생하는지 확인해볼 필요가 있으니 지역별 추이를 시각화 해보도록 하자! 
+
+
+
+```{r qrt_region_plot, fig.height=7,fig.height=7,echo=TRUE, fig.cap='분기별 지역별 아파트 매매건수 추이'}
+#group by 절에 region을 추가해서 쿼터별 지역별 매매량을 계산하게 함 
+region_cnts <- result_sales_dt[yyyyqrt != '2015Q2',.N,.(yyyyqrt,region)]
+
+#지면 여건상 ` theme(axis.text.x = element_blank())`로 X 레이블을 제거했다. 
+ggplot(region_cnts, aes(yyyyqrt, N,group=region)) + 
+  geom_line() + facet_wrap(~region,scale='free_y', ncol=3) + stat_smooth(method = 'lm') + 
+  theme(axis.text.x = element_blank()) 
+```
+
+
+`그림2`는 지역별 분기별 아파트 매매량 추이에 대해서 간단하게 플로팅하고 간단한 선형모형을 피팅해 추세를 확인할 수 있도록 했다(Y축 척도가 그래프마다 다르다는 것을 주의하길 바란다). 눈으로 어림짐작해보면, 17개 지역중에서 47%인 약 8개 지역에서 매매량 상승 추이가 보이는 것을 볼 수 있다. 
+
+시계열에 패턴이 존재한다면 그 패턴이 미래에도 계속될 것이라는 가정을 기반으로 예측(forecasting)을 해볼 수 있을 것이다. 그렇다면 시계열에 패턴이 존재한다고 할 수 있다고 볼 수 있는가? 
+이를 검증하는 가장 간단한 방법은 눈으로 파악하는 것이고, 방법론적으로 가능성을 가늠해 보는 가장 간단한 방법은 시계열이 랜덤한지를 보는 랜덤성 검정을 통해서이다. 
+
+랜덤성을 검정하는 런 검정을 통해서 시계열이 랜덤한 시계열인지 간단하게 확인해 보도록 하자!
+
+
+```{r monthly_sales, echo=TRUE, fig.cap='지역별 매매 추이의 램덤성 검정 시각화'}
+#월별 지역별 매매량
+region_cnts <- result_sales_dt[,.N,.(yyyymm,region)]
+
+#대표지역 추출
+regions <- unique(region_cnts$region)
+
+
+#각 지역별로 매매량의 랜덤성 검정 결과를 runs_p 변수에 추가
+runs_p <- c()
+for(reg in regions){
+  runs_p <- c(runs_p, runs.test(region_cnts[region %chin% reg,N])$p.value)
+}
+
+ggplot(data.table(regions, runs_p), aes(x=regions, y=runs_p, group=1)) + 
+  geom_line() + geom_point() + 
+  ylab('P-value') + xlab('지역')
+```
+
+
+`P-value`의 의미는 년도별 지역별 아파트 매매량의 변동이 랜덤하다는 귀무가설이 참이라 가정할 때 관측값이 나올 확률을 의미한다. `그림3`에서 보듯이 충북을 제외하고는 `0.05`미만의 유의미한 값이 나왔기 때문에 매매량의 패턴에는 랜덤하지 않은 뭔가 패턴이 있다는 것을 예상할 수 있다.  
+
+그렇다면 이들중 `서울` 지역의 매매 추이 패턴에 대해 패턴 종류별로 분리해서 살펴보자!
+
+
+```{r ts,echo=TRUE, fig.cap='시계열 분할(decompose)'}
+seoul_cnts <- result_sales_dt[yyyymm != '201504' & region %chin% '서울',.N,.(yyyymm)]
+
+tot_ts <- ts(seoul_cnts$N,start = c(2006,1), frequency = 12)
+
+plot(stl(tot_ts,s.window = 'periodic'))
+```
+
+위에서 첫 `data.table` 문법에서는 `2015`년 4월을 제외하며, 지역은 `서울`인 데이터셋에 대해서 월별(`yyyymm`)별 매매량(`.N`)을 카운팅해 `seoul_cnts`변수에 할당한다.  
+
+`R`에서 시계열 데이터를 다루기 위해서는 ts(time series)객체로 데이터를 변환해야 된다. 이를 위해 월별 매매량 데이터 벡터를 첫번째 변수로 입력하고 시작년월(2006,1)을 입력한뒤 년단위 12개월의 데이터라는 것(frequency)을 명시한다. 
+
+시계열에는 대표적으로 세가지 패턴이 존재한다. 
+
+1. 트랜드(Trend) : 장기적으로 나타나는 변동 패턴 
+2. 시즈널(Seasonal) : 주,월,분기,반기 단위 등 우리가 알고 있는 시간의 주기로 나타나는 패턴
+3. 주기(Cyclic) : 최소 2년 단위로 나타나는 고정된 기간이 아닌 장기적인 변동 
+
+
+위 세가지 중에서 1,2번을 시각화한 도표가 바로 `그림4`의 도표이다. 참고로 `R`에 `decompose`라는 `stl`함수와 비슷한 역할을 하는 함수가 존재하나 `stl`을 사용한 이유는 `decompose`가 이동평균에 의해서 시계열 분할을 하기 위해 시계열의 표현 기간이 줄어드는 특징을 가지고 있기 때문이다. 반면 `stl`의 경우는 [`Loess`][loess]기반 비선형 추정을 하기때문에 표현기간이 줄어드는 현상이 없다는 장점을 가지고 있다. 
+
+`그림4`의 오른쪽 바는 각 시계열의 스케일을 맞추기 위해 표시한 것으로, 시즈널 패턴이 가장 변동량이 적다는 것을 보이고 있으며, 시즈널과 트랜드를 제외한 나머지(remainder) 변동(알수 없는)이 가장 크다는 것을 보여준다. 이것이 의미하는건 패턴기반 예측 모델링이 가능하나 에러가 매우 클 수 있다는 것을 알려주고 있다. 다시말해 매매 추이만 가지고 예측을 하는건 에러가 매우 크며 좀더 정확한 예측을 위해서는 다른 정보가 필요하다는 것이다. 
+
+위에서 도출된 패턴을 기반으로 `2015`년 말까지의 서울지역 월단위 매매건수를 예측해 봤다. 
+
+```{r,echo=TRUE, fig.cap='ARIMA 모델 가정 만족 확인', fig.height=8}
+arima_mdl <- auto.arima(tot_ts)
+
+tsdiag(arima_mdl)
+```
+
+여기서 사용한 모델링 방법은 계절성(Seasonal) ARIMA 모형인데, 간단하게 과거의 관측값과 오차가 지금 현재의 시계열값을 결정한다는 ARMA모형에 불안정 시계열을 안정시계열로 만드는 I를 결합한 모형이다. 여기에 위의 개념을 계절적인 시차로 확장한게 계절성 ARIMA 모형이다. `AR(p)`모형의 p차수 `MA(q)`의 q차수 그리고 트랜드를 제거하여 안정시계열로 만들기 위한 `I(d)`의 차분 차수 d를 결정하기 위해 [KPSS test][kpss], [ACF][acf], [PACF][pacf]를 그려 확인이 필요하나 필자의 경험상 직접적으로 이런 과정을 거치는 것과 `auto.arima`를 사용해 자동으로 결정하게 하는것 사이의 차이를 가져오는 경우가 거의 없어서 자동으로 결정해주는 `auto.arima`를 사용해 모델링을 수행하였다. 
+
+`auto.arima`가 최적의 파라메터를 찾는 과정은 아래와 같다. 
+
+1. KPSS 검정을 통한 d 찾기 
+2. AIC를 최소로 하는 p,q 차수 단계적 탐색(stepwise search)
+
+자동화된 모델링을 수행하기 때문에 이 함수는 대량의 예측을 자동으로 수행할 필요가 있을 때 주로 사용된다. 
+
+모델의 차수를 찾는과정도 중요하지만 생성된 모델이 추출 가능한 패턴들을 가능한한 모두 데이터로부터 추출을 하였는지 확인이 반드시 필요하다. 이는 모형이 모형이 초기에 가졌던 가정을 만족하는지 확인하는 과정으로 어찌보면 모델의 성능을 측정하는 것만큼 중요한 과정중에 하나이다. 
+
+`그림5`는 모형이 모형의 가정을 잘 만족하는지 보여주는데, 오차의 등분산성을 확인하기 위해 표준화 잔차(Standardized Residuals) 플롯을 살펴보니 가정을 대체적으로 잘 만족하는 것을 볼 수 있으며, 시차 상관을 살펴보기 위해 ACF, [Ljung-Box test][jung] 결과를 살펴보면 10차 시차까지 시차 상관이 없다는 귀무가설을 기각하지 못해, 시차 상관이 없다고 볼 수 있다. 다만 지면 여건상 포함되지는 않았지만 오차의 정규성은 다소 위배되는 형태를 보이는데, 이때문에 예측구간, 신뢰구간을 기반으로 예측 결과를 해석할때 주의를 할 필요가 있음을 알 수 있다. 그러나 점추정은 상대적으로 의미가 있을 것으로 보인다. 
+
+
+```{r,echo=TRUE, fig.cap='서울지역 아파트 매매량 예측(2015년 말까지)'}
+#아래 명령어로 정확도등 다양한 지표가 확인 가능하다. 
+#accuracy(arima_mdl)
+plot(forecast(arima_mdl,h=8))
+```
+
+
+`그림6`은 과거 시계열과 예측치들이 함께 그려진 그래프인데, 봄,가을에 거래가 늘어나는 계절적인 패턴과 더불어 2006년 이래로 상승과 하강을 반복하여 결국 추세적으로 큰 변동이 없는 그러한 패턴이 학습된 것으로 볼 수 있다. 이전 분석에서 이미 앞에서 예상한 것처럼 평균 예측 에러율([MAPE][mape])이 23%에 육박하여 예측력이 그다지 좋지는 못한 것을 알 수 있으나, 모형의 가정에 대해서는 모델이 잘 소화하고 있어서 시계열에서 추출되어야 되는 패턴들은 잘 추출이 된것으로 보인다. 
+
+
+시계열 예측이라는 부분은 이미 알려진 패턴을 그 시계열에서 얼마나 잘 뽑아내느냐가 성패를 좌우한다. 그리고 이미 위에서 보는바와 같이 시계열적인 패턴은 대부분 뽑혀서 모델에 추가되었으나 안타깝게도 우리가 알지 못하는 부동산에 영향을 미치는 외생변수의 존재가 매우 크다는 것도 어렴풋이나마 확인할 수 있었다. 하지만 모형의 에러가 크다고 쓰지 못할 모형은 아니다. 해당 모형은 최소 트랜드와 시즈널에 대한 패턴 추출은 아주 잘 하고 있어 예측의 출발점으로는 손색이 없다고 생각한다. 외생 변수로 부동산 매매 활성화에 도움이 되는 한국은행 기준 금리, 경제활동 인구 변화와 같은 변수가 추가 된다면 좀더 에러를 줄일 수 있지 않을까 하는 생각을 해본다. 
+
+
+
+[jung]: https://en.wikipedia.org/wiki/Ljung–Box_test
+[pacf]: https://en.wikipedia.org/wiki/Partial_autocorrelation_function
+[acf]: https://en.wikipedia.org/wiki/Autocorrelation
+[loess]: https://en.wikipedia.org/wiki/Local_regression
+[github]: https://github.com/haven-jeon/korea_real_estate_analysis
+[rvis]: http://freesearch.pe.kr/archives/3891
+[kpss]: https://en.wikipedia.org/wiki/KPSS_test
+[mape]: https://en.wikipedia.org/wiki/Mean_absolute_percentage_error
+[molit]: http://rt.molit.go.kr
+[webtech]: http://cran.r-project.org/web/views/WebTechnologies.html
