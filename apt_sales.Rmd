@@ -1,5 +1,5 @@
 ---
-title: "아파트매매분석"
+title: "아파트 매매 EDA"
 author: "jeon heewon"
 date: "2016년 12월 16일"
 output: html_document
@@ -9,19 +9,195 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
+## 데이터에 대한 질문 
 
-## 
-
-
-
-
-
-
+- 아파트 매매 추이에 대한 지역별 시각화 및 특징 파악 
+- 지역별 매매 추이의 특징이 유사한 곳 지역 분석  
+- 제곱미터당 가격 추이 
+- 금리가 매매 추이에 미치는 영향도 분석 
 
 
+## 데이터 수집 
+
+- https://github.com/haven-jeon/korea_real_estate_analysis (200601 ~ 201504) 
+- http://rt.molit.go.kr (201505 ~ 201611)
+
+
+## 필드 설명 
+`si_gun_gu`는 매매가 일어날 시군을 의미하며, `m_bun`, `s_bun`은 번지를 의미한다. `area`는 $m^2$ 단위의 면적을 의미한다. `cont_date`는 계약일, `price`는 만원단위의 매매가격이다. `road_nm`은 도로명 주소, `region`은 지역, `yyyymm` 매매 년월을 의미한다. 
+
+## 지역별 매매 추이 
+
+```{r}
+library(data.table)
+library(dplyr)
+library(ggplot2)
+
+load("result_sales_dt_newest.RData")
+
+region_sales <- result_sales_dt_newest[,.N,.(region, yyyymm)]
+
+region_sales[,yyyymmdd:=ymd(paste0(yyyymm, "01")),]
 
 
 
+ggplot(region_sales, aes(yyyymmdd, N)) + geom_point() + geom_line(aes(colour=region, group=region)) +facet_wrap(~region, ncol=3, scale='free_y') + theme(text = element_text(size=10), axis.text.x=element_text(angle=45)) + scale_y_continuous("매매량") + scale_x_date("년월")
+
+```
+
+
+
+
+
+## 지역별 추이의 상관관계 
+
+
+```{r}
+library(tidyr)
+
+regions_yy <- result_sales_dt_newest[,.N,.(region, yyyymm)]
+
+regions_yy_dc <- spread(regions_yy, region, N)
+
+regions_yy_dc[yyyymm == '201504',]
+
+
+cor.mat <- cor(regions_yy_dc[,-1,with=F], use='complete.obs')
+
+library(corrplot)
+
+
+corrplot(cor.mat, method="number", order ="hclust", addrect=3)
+
+
+# 세가지 클러스터를 기준으로 매매량 시계열 예측 시도 
+
+
+
+result_sales_dt_newest[region %chin% c('인천', '경기', '서울'), region2:='수도권']
+
+result_sales_dt_newest[region %chin% c('제주'), region2:='제주']
+
+result_sales_dt_newest[is.na(region2), region2:='지방']
+
+table(result_sales_dt_newest$region2)
+
+regions_cnts <- result_sales_dt_newest[,.N,.(region2, yyyymm)][order(yyyymm)]
+
+
+rate <- data.table(read_excel("balance_rate.xlsx", sheet=1))
+
+rate[,`변경일자`:=ymd(`변경일자`)]
+rate[,yyyymm:=format(`변경일자`, '%Y%m')]
+rate <- rate[1:39]
+
+regions_cnts[,yyyymm:=as.numeric(yyyymm),]
+rate[,yyyymm:=as.numeric(yyyymm),]
+
+setkey(regions_cnts,yyyymm)
+setkey(rate,yyyymm)
+
+regions_cnts_rate <- rate[regions_cnts,roll=Inf][order(yyyymm)]
+
+
+
+
+tot_ts <- ts(regions_cnts_rate[region2 == '수도권']$N,start = c(2006,1), frequency = 12)
+
+plot(stl(tot_ts,s.window = 'periodic'))
+
+
+arima_mdl <- auto.arima(tot_ts)
+
+
+#가정에 부합하는가?
+tsdiag(arima_mdl)
+
+plot(forecast(arima_mdl,h=12))
+lines(fitted(arima_mdl), col='red', lty='dotted')
+
+
+tot_ts <- ts(regions_cnts_rate[region2 == '제주']$N,start = c(2006,1), frequency = 12)
+
+plot(stl(tot_ts,s.window = 'periodic'))
+
+
+arima_mdl <- auto.arima(tot_ts)
+
+
+#가정에 부합하는가?
+tsdiag(arima_mdl)
+
+plot(forecast(arima_mdl,h=12))
+lines(fitted(arima_mdl), col='red', lty='dotted')
+
+
+tot_ts <- ts(regions_cnts_rate[region2 == '지방']$N,start = c(2006,1), frequency = 12)
+
+plot(stl(tot_ts,s.window = 'periodic'))
+
+
+arima_mdl <- auto.arima(tot_ts)
+
+
+#가정에 부합하는가?
+tsdiag(arima_mdl)
+
+plot(forecast(arima_mdl,h=12))
+lines(fitted(arima_mdl), col='red', lty='dotted')
+
+
+```
+
+
+
+## 제곱미터당 가격 
+
+
+```{r}
+
+
+result_sales_dt_newest[,area:=as.numeric(area)]
+
+result_sales_dt_newest[,price_per_unit_area:=price/area]
+
+
+
+region_price <- result_sales_dt_newest[,.(mean_price_per_unit_area=mean(price_per_unit_area),.N),.(region, yyyymm)]
+
+
+
+region_price[,yyyymmdd:=ymd(paste0(yyyymm, "01")),]
+
+
+
+ggplot(region_price, aes(yyyymmdd, mean_price_per_unit_area)) + geom_point() + geom_line(aes(colour=region, group=region)) +facet_wrap(~region, ncol=3, scale='free_y') + theme(axis.text.x=element_text(angle=90)) + scale_x_date("년월") + scale_y_continuous("제곱미터당 가격(만원)")
+
+
+
+
+region_price[,yyyymm:=as.numeric(yyyymm),]
+rate[,yyyymm:=as.numeric(yyyymm),]
+
+setkey(region_price,yyyymm)
+setkey(rate,yyyymm)
+
+regions_price_rate <- rate[region_price,roll=Inf][order(yyyymm)]
+
+regions_price_rate[,rate:=`기준금리`]
+
+region_corr <- regions_price_rate[,.(corr=cor(mean_price_per_unit_area, rate)),region][order(corr)] 
+
+
+ggplot(region_corr, aes(reorder(region, corr), corr)) + geom_bar(stat='identity') + ggtitle("평균가격과 금리의 지역별 상관관계") + scale_x_discrete("지역") + scale_y_continuous("상관관계")
+
+ggplot(regions_price_rate[region == '서울'], aes(yyyymmdd, rate)) + geom_point() + geom_line() + ggtitle("한국은행기준금리") + scale_y_continuous("금리")
+
+#region_price[,.(as=cor(mean_price_per_unit_area, N,use='complete.obs')),region][order(as)]
+
+
+
+```
 
 
 

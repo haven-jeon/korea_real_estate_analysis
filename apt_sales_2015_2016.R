@@ -15,9 +15,10 @@ tbls <- list()
 for(m in 4:12){
 
 for(i in 1:17){
-  shet <- read_excel(sprintf("/Users/gogamza/ownCloud/DATA/apt_sales/2015년_%s월_전국_실거래가_아파트(매매).xls", str_pad(as.character(m),width = 2,pad = "0")),sheet = i,skip = 7) %>% data.table
+  shet <- read_excel(sprintf("C:/Users/gogamza/ownCloud/DATA/apt_sales/2015년_%s월_전국_실거래가_아파트(매매).xls", 
+                             str_pad(as.character(m),width = 2,pad = "0")),sheet = i,skip = 7) %>% data.table
   shet[,ym:=paste0('2015', str_pad(as.character(m),width = 2,pad = "0"))]
-  tbls[[i]] <- shet
+  tbls[[paste0(m,i)]] <- shet
   }
 }
 
@@ -29,9 +30,9 @@ tbls_ <- list()
 for(m in 1:11){
 
 for(i in 1:17){
-  shet <- read_excel(sprintf("/Users/gogamza/ownCloud/DATA/apt_sales/2016년_%s월_전국_실거래가_아파트(매매).xls", str_pad(as.character(m),width = 2,pad = "0")),sheet = i,skip = 7) %>% data.table
+  shet <- read_excel(sprintf("C:/Users/gogamza/ownCloud/DATA/apt_sales/2016년_%s월_전국_실거래가_아파트(매매).xls", str_pad(as.character(m),width = 2,pad = "0")),sheet = i,skip = 7) %>% data.table
   shet[,ym:=paste0('2016', str_pad(as.character(m),width = 2,pad = "0"))]
-  tbls_[[i]] <- shet
+  tbls_[[paste0(m,i)]] <- shet
   }
 }
 
@@ -82,20 +83,18 @@ tbls_total[,yyyyqrt:=factor(yyyyqrt)]
 tbls_total[,yyyymm:=ym]
 
 
-rbind(result_sales_dt, tbls_total[,-c('ym'), with=F])
 
 result_sales_dt[,m_bun:=ifelse(s_bun == 0 ,as.character(m_bun),paste0(m_bun, '-', s_bun))]
 
 result_sales_dt[,s_bun:=NULL]
 
 
-result_sales_dt_newest <- rbind(result_sales_dt, tbls_total[,-c('ym'), with=F])
+result_sales_dt_newest <- rbind(result_sales_dt[yyyymm != '201504'], tbls_total[,-c('ym'), with=F])
 
 
-save(result_sales_dt_newest, file='result_sales_dt_newest.RData', compress = 'xz')
+save(result_sales_dt_newest, file='result_sales_dt_newest.RData')
 
 
-result_sales_dt_newest
 
 
 
